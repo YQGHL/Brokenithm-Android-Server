@@ -42,9 +42,27 @@ static constexpr uint8_t kLedHead[4] = { 0x63, 'L', 'E', 'D' };
 // ============================================================================
 // 命令行解析（手写，兼容 MSVC / MinGW）
 // ============================================================================
-static void parseArgs(int argc, char* argv[]) {
+static void parseArgs(int argc, char* argv[], SignalProcessor::Config& spCfg) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+
+        // Helper: parse key=value from --key=value format
+        auto tryParseFloat = [&](const char* prefix, float& dest) -> bool {
+            if (arg.rfind(prefix, 0) == 0) {
+                dest = std::stof(arg.substr(strlen(prefix)));
+                return true;
+            }
+            return false;
+        };
+        auto tryParseU8 = [&](const char* prefix, uint8_t& dest) -> bool {
+            if (arg.rfind(prefix, 0) == 0) {
+                int v = std::stoi(arg.substr(strlen(prefix)));
+                dest = static_cast<uint8_t>(std::max(0, std::min(v, 255)));
+                return true;
+            }
+            return false;
+        };
+
         if (arg == "-p" && i + 1 < argc) {
             g_server_port = static_cast<uint16_t>(std::atoi(argv[++i]));
         } else if (arg == "-T") {
@@ -52,6 +70,24 @@ static void parseArgs(int argc, char* argv[]) {
         } else if (arg == "-r" && i + 1 < argc) {
             g_tcp_receive_threshold = static_cast<size_t>(std::atoi(argv[++i]));
             g_tcp_buffer_size = g_tcp_receive_threshold * 2;
+        } else if (tryParseFloat("--slider-alpha=", spCfg.slider_ema_alpha)) {
+        } else if (tryParseU8("--slider-deadzone=", spCfg.slider_deadzone)) {
+        } else if (tryParseU8("--air-threshold-on=", spCfg.air_threshold_on)) {
+        } else if (tryParseU8("--air-threshold-off=", spCfg.air_threshold_off)) {
+        } else if (tryParseU8("--button-debounce-frames=", spCfg.button_debounce_frames)) {
+        } else if (arg == "--help" || arg == "-h") {
+            printf("Brokenithm-Android-Server " VERSION "\n");
+            printf("Usage: brokenithm.exe [options]\n");
+            printf("  -p PORT                Server port (default: 52468)\n");
+            printf("  -T                     TCP mode (default: UDP)\n");
+            printf("  -r N                   TCP receive threshold (default: 48)\n");
+            printf("  --slider-alpha=FLOAT   Slider EMA smoothing alpha (default: 0.40)\n");
+            printf("  --slider-deadzone=N    Slider deadzone threshold 0-255 (default: 5)\n");
+            printf("  --air-threshold-on=N   Air sensor ON threshold 0-255 (default: 50)\n");
+            printf("  --air-threshold-off=N  Air sensor OFF threshold 0-255 (default: 25)\n");
+            printf("  --button-debounce-frames=N  Button debounce frame count (default: 2)\n");
+            printf("  -h, --help             Show this help\n");
+            exit(0);
         }
     }
 }
@@ -187,8 +223,12 @@ static bool handlePing(const char* buf, size_t len, SOCKET sHost) {
     char response[12];
     std::memcpy(response, buf, 12);
     response[2] = 'O';
-    sockaddr_in addr = makeIPv4Addr(g_remote_address, g_remote_port);
-    socketSendTo(sHost, addr, response, 12);
+    if (g_tcp_mode) {
+        send(sHost, response, 12, 0);
+    } else {
+        sockaddr_in addr = makeIPv4Addr(g_remote_address, g_remote_port);
+        socketSendTo(sHost, addr, response, 12);
+    }
     return true;
 }
 
@@ -283,9 +323,9 @@ static void processPacket(const char* buf, size_t len,
 
     // DIS：断开
     if (buf[1] == 'D' && buf[2] == 'I' && buf[3] == 'S' && len >= 4) {
-        g_connected = false;
+        g_connected.store(false, std::memory_order_release);
         if (g_tcp_mode) {
-            g_exit_flag = true;
+            g_exit_flag.store(true, std::memory_order_release);
             printErr("[INFO] Device disconnected!\n");
         } else if (!g_remote_address.empty()) {
             printErr("[INFO] Device %s:%d disconnected.\n", g_remote_address.data(), g_remote_port);
@@ -307,8 +347,8 @@ void threadLEDBroadcast(SOCKET sHost, const SharedMemory* memory) {
     int skip_count = 0;
     sockaddr_in addr = makeIPv4Addr(g_remote_address, g_remote_port);
 
-    while (!g_exit_flag) {
-        if (!g_connected) {
+    while (!g_exit_flag.load(std::memory_order_relaxed)) {
+        if (!g_connected.load(std::memory_order_relaxed)) {
             Sleep(50);
             continue;
         }
@@ -328,22 +368,29 @@ void threadLEDBroadcast(SOCKET sHost, const SharedMemory* memory) {
 
         if (should_send) {
             std::memcpy(tx_buf.data() + 4, curr_led.data(), 32 * 3);
-            if (socketSendTo(sHost, addr, tx_buf.data(), tx_buf.size()) < 0) {
-                printErr("[Error] Cannot send packet: error %lu\n", GetLastError());
+            int sent;
+            if (g_tcp_mode) {
+                sent = send(sHost, reinterpret_cast<const char*>(tx_buf.data()), static_cast<int>(tx_buf.size()), 0);
+            } else {
+                sent = socketSendTo(sHost, addr, tx_buf.data(), tx_buf.size());
+            }
+            if (sent < 0) {
+                int err = WSAGetLastError();
+                printErr("[Error] Cannot send packet: error %d\n", err);
                 if (g_tcp_mode) {
-                    if (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
+                    if (err == WSAEINTR || err == WSAEWOULDBLOCK) {
                         continue;
                     } else {
                         printErr("[INFO] Device disconnected!\n");
-                        g_connected = false;
-                        g_exit_flag = true;
+                        g_connected.store(false, std::memory_order_release);
+                        g_exit_flag.store(true, std::memory_order_release);
                         break;
                     }
                 }
             }
         }
 
-        Sleep(10);
+        Sleep(1);
     }
 }
 
@@ -354,7 +401,7 @@ void threadInputReceive(SOCKET sHost, SharedMemory* memory, SignalProcessor* pro
     if (!g_tcp_mode) {
         // ---- UDP 模式 ----
         std::array<char, 512> recv_buf{};
-        while (!g_exit_flag) {
+        while (!g_exit_flag.load(std::memory_order_relaxed)) {
             int recv_len = recvfrom(sHost, recv_buf.data(), static_cast<int>(recv_buf.size()),
                                     0, nullptr, nullptr);
             if (recv_len <= 0) continue;
@@ -368,16 +415,16 @@ void threadInputReceive(SOCKET sHost, SharedMemory* memory, SignalProcessor* pro
         }
     } else {
         // ---- TCP 模式 ----
-        std::vector<char> recv_buf(g_tcp_buffer_size);
+        std::array<char, 65536> recv_buf{};
         TcpRingBuffer ring;
         std::array<char, 256> pkt_buf{};
 
-        while (!g_exit_flag) {
+        while (!g_exit_flag.load(std::memory_order_relaxed)) {
             if (ring.readableCount() < g_tcp_receive_threshold) {
-                int recv_len = recv(sHost, recv_buf.data(), static_cast<int>(recv_buf.size()), 0);
+                int recv_len = recv(sHost, recv_buf.data(), static_cast<int>(g_tcp_buffer_size), 0);
                 if (recv_len == 0) {
                     printErr("[INFO] TCP peer closed connection.\n");
-                    g_exit_flag = true;
+                    g_exit_flag.store(true, std::memory_order_release);
                     break;
                 }
                 if (recv_len > 0) {
@@ -400,7 +447,8 @@ void threadInputReceive(SOCKET sHost, SharedMemory* memory, SignalProcessor* pro
 // 主函数
 // ============================================================================
 int main(int argc, char* argv[]) {
-    parseArgs(argc, argv);
+    SignalProcessor::Config spConfig;
+    parseArgs(argc, argv, spConfig);
     SetConsoleTitle("Brokenithm-Evolved-Android Server");
     printInfo();
 
@@ -417,7 +465,7 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    SignalProcessor processor;
+    SignalProcessor processor(spConfig);
 
     if (!g_tcp_mode) {
         printErr("[INFO] Mode: UDP\n");
@@ -441,7 +489,7 @@ int main(int argc, char* argv[]) {
         while (_getwch() != L'q');
         printErr("[INFO] Exiting gracefully...\n");
         g_last_input_packet_id = 0;
-        g_exit_flag = true;
+        g_exit_flag.store(true, std::memory_order_release);
         led_thread.join();
         input_thread.join();
     } else {
@@ -463,6 +511,8 @@ int main(int argc, char* argv[]) {
         }
         listen(sHost, 10);
 
+        // TCP mode: single-client design (one Android device per game instance).
+        // Accepts one connection at a time, processes until disconnect, then waits for next.
         while (true) {
             printErr("[INFO] Waiting for device on port %d...\n", g_server_port);
             sockaddr_in user_socket = {};
@@ -477,17 +527,18 @@ int main(int argc, char* argv[]) {
                 printErr("[INFO] Device %s:%d connected.\n", user_address, user_socket.sin_port);
             }
 
-            g_connected = true;
-            g_exit_flag = false;
+            g_connected.store(true, std::memory_order_release);
+            g_exit_flag.store(false, std::memory_order_release);
             auto led_thread = std::thread(threadLEDBroadcast, acc_socket, &memory);
             auto input_thread = std::thread(threadInputReceive, acc_socket, &memory, &processor);
             led_thread.join();
             input_thread.join();
+            Sleep(100); // cooldown between connections
 
             printErr("[INFO] Exiting gracefully...\n");
             g_last_input_packet_id = 0;
-            g_exit_flag = true;
-            g_connected = false;
+            g_exit_flag.store(true, std::memory_order_release);
+            g_connected.store(false, std::memory_order_release);
         }
     }
 

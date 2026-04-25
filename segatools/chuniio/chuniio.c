@@ -30,6 +30,8 @@ struct chuni_io_ipc_memory_info
     uint8_t remoteCardId[10];
 };
 typedef struct chuni_io_ipc_memory_info chuni_io_ipc_memory_info;
+_Static_assert(sizeof(struct chuni_io_ipc_memory_info) == 143,
+    "IPCMemoryInfo size mismatch with server — update both copies");
 static HANDLE chuni_io_file_mapping_handle;
 chuni_io_ipc_memory_info* chuni_io_file_mapping;
 

@@ -40,6 +40,8 @@ struct aime_io_ipc_memory_info
     uint8_t remoteCardId[10];
 };
 typedef struct aime_io_ipc_memory_info aime_io_ipc_memory_info;
+_Static_assert(sizeof(struct aime_io_ipc_memory_info) == 143,
+    "IPCMemoryInfo size mismatch with server — update both copies");
 static HANDLE aime_io_file_mapping_handle;
 aime_io_ipc_memory_info* aime_io_file_mapping;
 

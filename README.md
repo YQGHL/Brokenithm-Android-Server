@@ -124,6 +124,44 @@ The `IPCMemoryInfo` structure and all `Packet*` structs remain **bit-identical**
 
 ---
 
+。
+
+---
+
+## Updates (2026-04-25)
+
+On top of the 2026-04-23 refactoring, the following additional optimizations were applied:
+
+### S-1: LED Broadcast Finer Timing
+- `Sleep(10)` → `Sleep(1)` in the LED broadcast thread.
+- The existing skip-count keepalive mechanism (send unchanged LED every 50 cycles) is preserved.
+
+### S-2: Correct Memory Ordering in `readLed()`
+- Moved `std::atomic_thread_fence(std::memory_order_acquire)` to the **very top** of `readLed()`, before the null-guard check.
+- **Rationale**: In the old code, the compiler could reorder the `if (!mem_ || !out) return;` guard ahead of the fence, causing the null-pointer check to read a potentially stale value. Placing the fence first ensures all subsequent reads (including `mem_`) observe the complete prior writes.
+
+### S-3: SignalProcessor CLI Configurability
+- Added command-line flags for runtime tuning without recompilation:
+  - `--slider-alpha=FLOAT`
+  - `--slider-deadzone=N`
+  - `--air-threshold-on=N`
+  - `--air-threshold-off=N`
+  - `--button-debounce-frames=N`
+  - `-h` / `--help`
+- Default values remain identical to the hardcoded originals (`α=0.40`, deadzone=5, on=50, off=25, debounce=2).
+
+### S-4: TCP Connection Cooldown
+- Added `Sleep(100)` after `input_thread.join()` in the TCP accept loop.
+- Added an architectural comment documenting the single-client FIFO design.
+- Prevents connection-storm issues on rapid disconnect/reconnect.
+
+### S-5: IPCMemoryInfo Compile-Time Size Verification
+- Added `_Static_assert(sizeof(struct chuni_io_ipc_memory_info) == 143, ...)` in `segatools/chuniio/chuniio.c`.
+- Added `_Static_assert(sizeof(struct aime_io_ipc_memory_info) == 143, ...)` in `segatools/aimeio/aimeio.c`.
+- If the shared-memory layout ever diverges between the server and the DLLs, the build will fail at compile time rather than silently corrupting game memory at runtime.
+
+---
+
 # License
 
 Same as the original project.

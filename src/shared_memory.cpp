@@ -68,7 +68,7 @@ void SharedMemory::writeRemoteCard(uint8_t read, uint8_t type, const uint8_t id[
 }
 
 void SharedMemory::readLed(uint8_t out[32 * 3]) const {
-    if (!mem_ || !out) return;
     std::atomic_thread_fence(std::memory_order_acquire);
+    if (!mem_ || !out) return;
     std::memcpy(out, mem_->ledRgbData, 32 * 3);
 }
