@@ -2,7 +2,7 @@
 
 [Brokenithm-Android](https://github.com/tindy2013/Brokenithm-Android) 的 Windows 服务端。
 
-本分支是对原版 [esterTion/Brokenithm-Android-Server](https://github.com/esterTion/Brokenithm-Android-Server) 的**性能导向重构**。在保持完整协议及 `segatools` DLL 兼容性的同时，显著提升了实时性能、信号质量和代码可维护性。
+本分支是对原版的**性能导向重构**。在保持完整协议及 `segatools` DLL 兼容性的同时，显著提升了实时性能、信号质量和代码可维护性。
 
 ---
 
