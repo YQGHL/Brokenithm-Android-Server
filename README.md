@@ -1,4 +1,4 @@
-## Brokenithm-Android-Server（进化版）
+## Brokenithm-Android-Server
 
 [Brokenithm-Android](https://github.com/tindy2013/Brokenithm-Android) 的 Windows 服务端。
 
